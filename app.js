@@ -178,35 +178,52 @@ Criterios de prioridad:
 - Media: molestia relevante pero acotada.
 - Baja: incidencia menor o difícil de verificar.`;
 
-  const resp=await fetch('https://api.anthropic.com/v1/messages',{
-    method:'POST',
-    headers:{
-      'Content-Type':'application/json',
-      'x-api-key':state.apiKey,
-      'anthropic-version':'2023-06-01',
-      'anthropic-dangerous-direct-browser-access':'true'
-    },
-    body:JSON.stringify({
-      model:'claude-sonnet-4-6',
-      max_tokens:300,
-      messages:[{role:'user',content:prompt}]
-    })
-  });
-  if(!resp.ok){
-    const e=await resp.text();
-    throw new Error(`API ${resp.status}: ${e.slice(0,80)}`);
+  // 🔁 Reintentos automáticos para error 529 (API sobrecargada)
+  const MAX_INTENTOS = 3;
+  const ESPERA_BASE  = 1500; // ms
+
+  for(let intento = 1; intento <= MAX_INTENTOS; intento++){
+    const resp = await fetch('https://api.anthropic.com/v1/messages',{
+      method:'POST',
+      headers:{
+        'Content-Type':'application/json',
+        'x-api-key':state.apiKey,
+        'anthropic-version':'2023-06-01',
+        'anthropic-dangerous-direct-browser-access':'true'
+      },
+      body:JSON.stringify({
+        model:'claude-sonnet-4-6',
+        max_tokens:300,
+        messages:[{role:'user',content:prompt}]
+      })
+    });
+
+    // 529 = sobrecargado → esperar y reintentar
+    if(resp.status === 529){
+      if(intento === MAX_INTENTOS) throw new Error(`API 529: Servicio sobrecargado tras ${MAX_INTENTOS} intentos. Intenta en unos segundos.`);
+      const espera = ESPERA_BASE * intento; // 1.5s → 3s → 4.5s
+      $('#iaOut').innerHTML=`<div class="ia-loading"><span class="spinner"></span>Servidor ocupado, reintentando (${intento}/${MAX_INTENTOS})…</div>`;
+      await new Promise(r => setTimeout(r, espera));
+      continue;
+    }
+
+    if(!resp.ok){
+      const e = await resp.text();
+      throw new Error(`API ${resp.status}: ${e.slice(0,80)}`);
+    }
+
+    const data = await resp.json();
+    let txt = (data.content||[]).filter(b=>b.type==='text').map(b=>b.text).join('').trim();
+    txt = txt.replace(/```json|```/g,'').trim();
+    const parsed = JSON.parse(txt);
+    return {
+      categoria: parsed.categoria || report.type,
+      prioridad: normPrio(parsed.prioridad),
+      confianza: Math.max(0, Math.min(1, Number(parsed.confianza)||0.7)),
+      accion:    parsed.accion || 'Derivar a supervisión operativa.',
+      engine:    'IA · Claude'
+    };
   }
-  const data=await resp.json();
-  let txt=(data.content||[]).filter(b=>b.type==='text').map(b=>b.text).join('').trim();
-  txt=txt.replace(/```json|```/g,'').trim();
-  const parsed=JSON.parse(txt);
-  return {
-    categoria:parsed.categoria||report.type,
-    prioridad:normPrio(parsed.prioridad),
-    confianza:Math.max(0,Math.min(1,Number(parsed.confianza)||0.7)),
-    accion:parsed.accion||'Derivar a supervisión operativa.',
-    engine:'IA · Claude'
-  };
 }
 function normPrio(p){
   if(!p) return 'Media';
