@@ -133,7 +133,9 @@ function validateRouteInput(){
   if(!hint){
     hint=document.createElement('div'); hint.id='routeHint';
     hint.style.cssText='font-size:12px;margin-top:6px;min-height:18px;transition:opacity .2s';
-    $('#routeNum').parentNode.insertBefore(hint, $('#routeNum').nextSibling);
+    // Insertar DESPUÉS del route-row, no dentro de él
+    const routeRow = $('#routeNum').closest('.route-row') || $('#routeNum').parentNode;
+    routeRow.parentNode.insertBefore(hint, routeRow.nextSibling);
   }
   if(!num || num.length < 1){ hint.innerHTML=''; state.form.gtfsValid=false; return; }
   const result = lookupRoute(letter, num);
@@ -167,8 +169,9 @@ function validateRouteInput(){
    PARADEROS GTFS — Selector + Geolocalización
    ============================================================ */
 function initStopSelector() {
-  // Crear contenedor dinámico debajo del campo de recorrido
-  const anchor = $('#routeHint') || $('#routeNum').parentNode;
+  // Insertar después de routeHint (que ya está fuera del route-row)
+  const anchor = $('#routeHint');
+  if (!anchor) return null;
   let box = $('#stopBox');
   if (!box) {
     box = document.createElement('div');
@@ -181,6 +184,7 @@ function initStopSelector() {
 
 function showStopSelector(routeId) {
   const box = initStopSelector();
+  if (!box) return;
   if (!routeId || typeof getRouteDirections !== 'function' || !hasRouteStops(routeId)) {
     box.style.display = 'none';
     state.form.stopId = null; state.form.stopName = null;
@@ -192,17 +196,17 @@ function showStopSelector(routeId) {
 
   box.style.display = 'block';
   box.innerHTML = `
-    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px">
-      <label style="font-size:12px;color:var(--muted)">Paradero</label>
-      <select id="stopDir" style="font-size:13px;padding:4px 8px;background:var(--surface);color:var(--ink);border:1px solid var(--border);border-radius:6px">
+    <label style="display:block;font-size:13px;font-weight:600;color:var(--ink);margin-bottom:8px">Paradero <span style="font-weight:400;color:var(--muted);font-size:12px">opcional</span></label>
+    <div style="display:flex;gap:8px;align-items:stretch;margin-bottom:8px">
+      <select id="stopDir" style="flex:1;font-size:12px;padding:6px 8px;background:var(--surface);color:var(--ink);border:1px solid var(--border);border-radius:6px">
         ${dirs.map(d => `<option value="${d.dir}">${d.label}: ${d.origin} → ${d.dest}</option>`).join('')}
       </select>
-      <button id="geoBtn" type="button" style="font-size:12px;padding:5px 10px;background:var(--surface);color:var(--ink);border:1px solid var(--border);border-radius:6px;cursor:pointer">📍 Ubicarme</button>
+      <button id="geoBtn" type="button" style="white-space:nowrap;font-size:12px;padding:6px 12px;background:var(--surface);color:var(--ink);border:1px solid var(--border);border-radius:6px;cursor:pointer">📍 Ubicarme</button>
     </div>
-    <select id="stopSelect" size="1" style="width:100%;font-size:13px;padding:6px 8px;background:var(--surface);color:var(--ink);border:1px solid var(--border);border-radius:6px">
-      <option value="">— Seleccionar paradero (opcional) —</option>
+    <select id="stopSelect" size="1" style="width:100%;font-size:13px;padding:8px;background:var(--surface);color:var(--ink);border:1px solid var(--border);border-radius:6px">
+      <option value="">— Seleccionar paradero —</option>
     </select>
-    <div id="stopInfo" style="font-size:12px;margin-top:4px;min-height:16px"></div>`;
+    <div id="stopInfo" style="font-size:12px;margin-top:6px;min-height:16px"></div>`;
 
   // Llenar paradas al cambiar dirección
   const fillStops = () => {
@@ -622,6 +626,5 @@ function renderDashboard(){
   });
 }
 
-/* init */
 updateClicks();
 renderDashboard();
