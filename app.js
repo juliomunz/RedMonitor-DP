@@ -5,10 +5,10 @@
 
 const state = {
   apiKey: null,
-  mode: null,
-  reports: [],
+  mode: null,            // 'ia' | 'demo'
+  reports: [],           // historial completo
   alerts: [],
-  iaTimes: [],
+  iaTimes: [],           // tiempos de clasificación (ms)
   iaCorrect: 0,
   iaTotal: 0,
   form: { type:null, letter:null, num:null },
@@ -51,6 +51,7 @@ const TYPE_EMOJI = {
   'Otro':'❓'
 };
 
+/* ---------- helpers ---------- */
 const $ = s => document.querySelector(s);
 const $$ = s => document.querySelectorAll(s);
 function toast(msg, ok=true){
@@ -139,10 +140,12 @@ function validateRouteInput(){
   if(result.found){
     hint.innerHTML=`<span style="color:#4ade80">✓ ${result.routeId} · ${result.name}</span>`;
     state.form.gtfsName=result.name; state.form.gtfsRouteId=result.routeId; state.form.gtfsValid=true;
+    showStopSelector(result.routeId);
   } else if(result.suggestions.length){
     const sugs=result.suggestions.map(s=>`<span class="route-sug" data-id="${s.id}" style="cursor:pointer;text-decoration:underline;margin-right:8px;color:inherit">${s.id}</span>`).join('');
     hint.innerHTML=`<span style="color:#f59e0b">⚠ No encontrado. ¿Quisiste decir: ${sugs}?</span>`;
     state.form.gtfsValid=false; state.form.gtfsName=null;
+    showStopSelector(null);
     hint.querySelectorAll('.route-sug').forEach(el=>{
       el.onclick=()=>{
         const sid=el.dataset.id;
@@ -155,7 +158,146 @@ function validateRouteInput(){
   } else {
     hint.innerHTML=`<span style="color:#f87171">✗ "${result.routeId}" no existe en RED</span>`;
     state.form.gtfsValid=false; state.form.gtfsName=null;
+    showStopSelector(null);
   }
+}
+
+
+/* ============================================================
+   PARADEROS GTFS — Selector + Geolocalización
+   ============================================================ */
+function initStopSelector() {
+  // Crear contenedor dinámico debajo del campo de recorrido
+  const anchor = $('#routeHint') || $('#routeNum').parentNode;
+  let box = $('#stopBox');
+  if (!box) {
+    box = document.createElement('div');
+    box.id = 'stopBox';
+    box.style.cssText = 'margin-top:12px;display:none';
+    anchor.parentNode.insertBefore(box, anchor.nextSibling);
+  }
+  return box;
+}
+
+function showStopSelector(routeId) {
+  const box = initStopSelector();
+  if (!routeId || typeof getRouteDirections !== 'function' || !hasRouteStops(routeId)) {
+    box.style.display = 'none';
+    state.form.stopId = null; state.form.stopName = null;
+    return;
+  }
+
+  const dirs = getRouteDirections(routeId);
+  if (!dirs.length) { box.style.display = 'none'; return; }
+
+  box.style.display = 'block';
+  box.innerHTML = `
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px">
+      <label style="font-size:12px;color:var(--muted)">Paradero</label>
+      <select id="stopDir" style="font-size:13px;padding:4px 8px;background:var(--surface);color:var(--ink);border:1px solid var(--border);border-radius:6px">
+        ${dirs.map(d => `<option value="${d.dir}">${d.label}: ${d.origin} → ${d.dest}</option>`).join('')}
+      </select>
+      <button id="geoBtn" type="button" style="font-size:12px;padding:5px 10px;background:var(--surface);color:var(--ink);border:1px solid var(--border);border-radius:6px;cursor:pointer">📍 Ubicarme</button>
+    </div>
+    <select id="stopSelect" size="1" style="width:100%;font-size:13px;padding:6px 8px;background:var(--surface);color:var(--ink);border:1px solid var(--border);border-radius:6px">
+      <option value="">— Seleccionar paradero (opcional) —</option>
+    </select>
+    <div id="stopInfo" style="font-size:12px;margin-top:4px;min-height:16px"></div>`;
+
+  // Llenar paradas al cambiar dirección
+  const fillStops = () => {
+    const dir = $('#stopDir').value;
+    const stops = getRouteStops(routeId, dir);
+    const sel = $('#stopSelect');
+    sel.innerHTML = '<option value="">— Seleccionar paradero (opcional) —</option>' +
+      stops.map((s, i) => `<option value="${s[3]}" data-lat="${s[0]}" data-lon="${s[1]}">#${i+1} ${s[2]}</option>`).join('');
+    state.form.stopId = null; state.form.stopName = null; state.form.stopDir = dir;
+    $('#stopInfo').innerHTML = `<span style="color:var(--muted)">${stops.length} paradas en este sentido</span>`;
+  };
+
+  $('#stopDir').onchange = fillStops;
+  fillStops();
+
+  // Seleccionar parada manualmente
+  $('#stopSelect').onchange = () => {
+    const sel = $('#stopSelect');
+    const opt = sel.options[sel.selectedIndex];
+    if (sel.value) {
+      state.form.stopId = sel.value;
+      state.form.stopName = opt.textContent.replace(/^#\d+\s*/, '');
+      state.form.stopLat = parseFloat(opt.dataset.lat);
+      state.form.stopLon = parseFloat(opt.dataset.lon);
+      $('#stopInfo').innerHTML = `<span style="color:#4ade80">✓ ${state.form.stopName}</span>`;
+    } else {
+      state.form.stopId = null; state.form.stopName = null;
+      $('#stopInfo').innerHTML = '';
+    }
+  };
+
+  // Geolocalización
+  $('#geoBtn').onclick = () => {
+    if (!navigator.geolocation) {
+      $('#stopInfo').innerHTML = '<span style="color:var(--red-soft)">Tu navegador no soporta geolocalización</span>';
+      return;
+    }
+    $('#geoBtn').disabled = true;
+    $('#geoBtn').textContent = '📍 Buscando…';
+
+    navigator.geolocation.getCurrentPosition(
+      pos => {
+        const lat = pos.coords.latitude;
+        const lon = pos.coords.longitude;
+        const dir = $('#stopDir').value;
+        const nearest = findNearestStop(routeId, lat, lon, dir);
+        const nearby  = findNearbyStops(routeId, lat, lon, 500, dir);
+
+        if (nearest) {
+          // Seleccionar automáticamente la más cercana en el dropdown
+          const sel = $('#stopSelect');
+          sel.value = nearest.stop_id;
+          state.form.stopId   = nearest.stop_id;
+          state.form.stopName = nearest.name;
+          state.form.stopLat  = nearest.lat;
+          state.form.stopLon  = nearest.lon;
+
+          let info = `<span style="color:#4ade80">📍 ${nearest.name} (a ${nearest.distanceM}m de ti)</span>`;
+          if (nearby.length > 1) {
+            info += '<br><span style="color:var(--muted);font-size:11px">También cerca: ' +
+              nearby.slice(1).map(s =>
+                `<span class="route-sug" data-sid="${s.stop_id}" style="cursor:pointer;text-decoration:underline">${s.name} (${s.distanceM}m)</span>`
+              ).join(', ') + '</span>';
+          }
+          $('#stopInfo').innerHTML = info;
+
+          // Click en parada alternativa
+          $('#stopInfo').querySelectorAll('.route-sug').forEach(el => {
+            el.onclick = () => {
+              const alt = nearby.find(s => s.stop_id === el.dataset.sid);
+              if (alt) {
+                sel.value = alt.stop_id;
+                state.form.stopId   = alt.stop_id;
+                state.form.stopName = alt.name;
+                state.form.stopLat  = alt.lat;
+                state.form.stopLon  = alt.lon;
+                $('#stopInfo').innerHTML = `<span style="color:#4ade80">📍 ${alt.name} (a ${alt.distanceM}m)</span>`;
+              }
+            };
+          });
+        } else {
+          $('#stopInfo').innerHTML = '<span style="color:var(--amber)">No se encontraron paradas cerca de tu ubicación para este recorrido</span>';
+        }
+        $('#geoBtn').disabled = false;
+        $('#geoBtn').textContent = '📍 Ubicarme';
+      },
+      err => {
+        const msgs = { 1: 'Permiso de ubicación denegado', 2: 'Ubicación no disponible', 3: 'Tiempo de espera agotado' };
+        $('#stopInfo').innerHTML = `<span style="color:var(--red-soft)">${msgs[err.code] || 'Error de geolocalización'}</span>`;
+        $('#geoBtn').disabled = false;
+        $('#geoBtn').textContent = '📍 Ubicarme';
+      },
+      { enableHighAccuracy: true, timeout: 8000 }
+    );
+  };
 }
 
 /* ============================================================
@@ -187,8 +329,9 @@ $('#sendBtn').onclick=async()=>{
   // [GTFS v2] capturar frecuencia y servicio en el momento del reporte
   const freqSnapshot = (typeof getCurrentFrequency === 'function') ? getCurrentFrequency(f.gtfsRouteId || route) : null;
   const svcSnapshot  = (typeof getTodayService === 'function') ? getTodayService() : null;
+  const stopInfo = f.stopId ? { id:f.stopId, name:f.stopName, lat:f.stopLat, lon:f.stopLon, dir:f.stopDir } : null;
   const report={ id:Date.now(), type:f.type, route, gtfsName:f.gtfsName||null,
-                 freq:freqSnapshot, svc:svcSnapshot, comment, time:nowTime() };
+                 stop:stopInfo, freq:freqSnapshot, svc:svcSnapshot, comment, time:nowTime() };
 
   $('#iaOut').innerHTML=`<div class="ia-loading"><span class="spinner"></span>Analizando reporte con IA…</div>`;
   $('#sendBtn').disabled=true;
@@ -199,7 +342,7 @@ $('#sendBtn').onclick=async()=>{
     if(state.mode==='ia'){
       result = await classifyWithIA(report);
     }else{
-      await new Promise(r=>setTimeout(r, 600+Math.random()*900));
+      await new Promise(r=>setTimeout(r, 600+Math.random()*900)); // latencia simulada realista
       result = classifyDemo(report);
     }
   }catch(err){
@@ -230,6 +373,8 @@ $('#sendBtn').onclick=async()=>{
 
 function resetForm(){
   state.form={type:null,letter:null,num:null};
+  const stopBox=$('#stopBox'); if(stopBox) stopBox.style.display='none';
+  state.form.stopId=null; state.form.stopName=null;
   $$('.type-opt').forEach(o=>o.classList.remove('sel'));
   $('#routeLetter').value='—'; $('#routeNum').value=''; $('#comment').value='';
   updateClicks();
@@ -243,6 +388,9 @@ async function classifyWithIA(report){
 
   // [GTFS v2] Contexto de frecuencia real
   const freqInfo = (typeof getCurrentFrequency === 'function') ? getCurrentFrequency(report.route) : null;
+  const stopCtx  = report.stop
+    ? `- Paradero: ${report.stop.name} (${report.stop.id}, coords: ${report.stop.lat}, ${report.stop.lon})`
+    : '';
   const freqCtx  = freqInfo && freqInfo.operates && !freqInfo.outOfService
     ? `- Frecuencia programada AHORA: cada ${freqInfo.headwayMin} min (franja ${freqInfo.startTime}–${freqInfo.endTime}, ${freqInfo.serviceLabel})`
     : freqInfo && freqInfo.operates && freqInfo.outOfService
@@ -261,6 +409,7 @@ Reporte:
 - Recorrido: ${routeCtx}
 ${svcCtx}
 ${freqCtx}
+${stopCtx}
 - Comentario: ${report.comment || '(sin comentario)'}
 
 Devuelve SOLO un objeto JSON válido, sin texto adicional ni markdown, con esta estructura exacta:
@@ -357,6 +506,7 @@ function renderVerdict(report){
       <div class="reco"><b>Acción recomendada</b>${r.accion}</div>
       <div class="timing">
         <span>recorrido <b style="color:var(--ink)">${report.route}</b>${report.gtfsName ? ` <span style="color:var(--muted);font-weight:400">· ${report.gtfsName}</span>` : ''}</span>
+        ${report.stop ? `<span>paradero <b style="color:var(--ink)">${report.stop.name}</b> <span style="color:var(--muted)">(${report.stop.id})</span></span>` : ''}
         ${report.svc ? `<span>día <b style="color:var(--ink)">${report.svc.label}</b></span>` : ''}
         ${report.freq && report.freq.operates && !report.freq.outOfService
           ? `<span>frecuencia programada <b style="color:var(--ink)">cada ${report.freq.headwayMin} min</b> <span style="color:var(--muted)">(${report.freq.startTime}–${report.freq.endTime})</span></span>`
@@ -472,5 +622,6 @@ function renderDashboard(){
   });
 }
 
+/* init */
 updateClicks();
 renderDashboard();
