@@ -5,10 +5,10 @@
 
 const state = {
   apiKey: null,
-  mode: null,            // 'ia' | 'demo'
-  reports: [],           // historial completo
+  mode: null,
+  reports: [],
   alerts: [],
-  iaTimes: [],           // tiempos de clasificación (ms)
+  iaTimes: [],
   iaCorrect: 0,
   iaTotal: 0,
   form: { type:null, letter:null, num:null },
@@ -105,8 +105,8 @@ $$('.tab').forEach(tab=>{
 function updateClicks(){
   let c=0;
   if(state.form.type) c++;
-  if(state.form.letter && state.form.letter!=='—') c++;
-  if(state.form.num) c++;
+  if(state.form.gtfsValid) c++;
+  if(state.form.stopId) c++;
   ['p1','p2','p3'].forEach((id,i)=>{
     const pip=$('#'+id); pip.className='pip'+(i<c?' fill':'');
   });
@@ -164,7 +164,6 @@ function validateRouteInput(){
   }
 }
 
-
 /* ============================================================
    PARADEROS GTFS — Selector + Geolocalización
    ============================================================ */
@@ -196,7 +195,7 @@ function showStopSelector(routeId) {
 
   box.style.display = 'block';
   box.innerHTML = `
-    <label style="display:block;font-size:13px;font-weight:600;color:var(--ink);margin-bottom:8px">Paradero <span style="font-weight:400;color:var(--muted);font-size:12px">opcional</span></label>
+    <label style="display:block;font-size:13px;font-weight:600;color:var(--ink);margin-bottom:8px">Paradero <span style="color:var(--red-soft)">*</span></label>
     <div style="display:flex;gap:8px;align-items:stretch;margin-bottom:8px">
       <select id="stopDir" style="flex:1;font-size:12px;padding:6px 8px;background:var(--surface);color:var(--ink);border:1px solid var(--border);border-radius:6px">
         ${dirs.map(d => `<option value="${d.dir}">${d.label}: ${d.origin} → ${d.dest}</option>`).join('')}
@@ -217,6 +216,7 @@ function showStopSelector(routeId) {
       stops.map((s, i) => `<option value="${s[3]}" data-lat="${s[0]}" data-lon="${s[1]}">#${i+1} ${s[2]}</option>`).join('');
     state.form.stopId = null; state.form.stopName = null; state.form.stopDir = dir;
     $('#stopInfo').innerHTML = `<span style="color:var(--muted)">${stops.length} paradas en este sentido</span>`;
+    updateClicks();
   };
 
   $('#stopDir').onchange = fillStops;
@@ -236,6 +236,7 @@ function showStopSelector(routeId) {
       state.form.stopId = null; state.form.stopName = null;
       $('#stopInfo').innerHTML = '';
     }
+    updateClicks();
   };
 
   // Geolocalización
@@ -272,6 +273,7 @@ function showStopSelector(routeId) {
               ).join(', ') + '</span>';
           }
           $('#stopInfo').innerHTML = info;
+          updateClicks();
 
           // Click en parada alternativa
           $('#stopInfo').querySelectorAll('.route-sug').forEach(el => {
@@ -284,6 +286,7 @@ function showStopSelector(routeId) {
                 state.form.stopLat  = alt.lat;
                 state.form.stopLon  = alt.lon;
                 $('#stopInfo').innerHTML = `<span style="color:#4ade80">📍 ${alt.name} (a ${alt.distanceM}m)</span>`;
+                updateClicks();
               }
             };
           });
@@ -310,7 +313,7 @@ function showStopSelector(routeId) {
 $('#sendBtn').onclick=async()=>{
   const f=state.form;
   if(!f.type){ toast('Selecciona el tipo de incidente', false); return; }
-  if(!f.letter || f.letter==='—' || !f.num){ toast('Indica el recorrido (letra y número)', false); return; }
+  if(!f.num){ toast('Indica el número de recorrido', false); return; }
   if(!state.mode){ toast('Primero conecta la IA o activa el modo demo', false); $('#keyBtn').click(); return; }
 
   // [GTFS] Validar recorrido contra datos reales
@@ -320,6 +323,9 @@ $('#sendBtn').onclick=async()=>{
     else{ toast(`Recorrido "${buildRouteId(f.letter,f.num)}" no existe en RED. Verifica el número.`, false); return; }
   }
 
+  // [GTFS v3] Paradero obligatorio
+  if(!f.stopId){ toast('Selecciona el paradero donde te encuentras', false); return; }
+
   // [GTFS v2] Advertir si el recorrido no opera hoy
   if(f.gtfsRouteId && typeof getCurrentFrequency === 'function'){
     const chk = getCurrentFrequency(f.gtfsRouteId);
@@ -328,7 +334,7 @@ $('#sendBtn').onclick=async()=>{
     }
   }
 
-  const route=`${f.letter}${f.num.padStart(2,'0')}`;
+  const route = f.gtfsRouteId || buildRouteId(f.letter, f.num);
   const comment=$('#comment').value.trim();
   // [GTFS v2] capturar frecuencia y servicio en el momento del reporte
   const freqSnapshot = (typeof getCurrentFrequency === 'function') ? getCurrentFrequency(f.gtfsRouteId || route) : null;
@@ -346,7 +352,7 @@ $('#sendBtn').onclick=async()=>{
     if(state.mode==='ia'){
       result = await classifyWithIA(report);
     }else{
-      await new Promise(r=>setTimeout(r, 600+Math.random()*900)); // latencia simulada realista
+      await new Promise(r=>setTimeout(r, 600+Math.random()*900));
       result = classifyDemo(report);
     }
   }catch(err){
